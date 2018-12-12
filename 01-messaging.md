@@ -16,6 +16,7 @@ All data fields are unsigned big-endian unless otherwise specified.
   * [Setup Messages](#setup-messages)
     * [The `init` Message](#the-init-message)
     * [The `error` Message](#the-error-message)
+    * [The `identity` Message](#the-identity-message)
   * [Control Messages](#control-messages)
     * [The `ping` and `pong` Messages](#the-ping-and-pong-messages)
   * [Acknowledgments](#acknowledgments)
@@ -183,6 +184,111 @@ diagnosis, as this indicates that one peer has a bug.
 
 It may be wise not to distinguish errors in production settings, lest
 it leak information — hence, the optional `data` field.
+
+### The `identity` Message
+
+For signalling biographical information about a node to your other peer, there
+is the option of sending this message with information about what software you
+are running and what services you provide.
+
+If bits 8 or 9 in the `localfeatures` field are set then nodes MUST send this
+after receiving the remote peer's `init` message, and SHOULD wait for the
+`identity` message to be received from the other peer before allowing any other
+protocol traffic.  If the bit is *not* set bit an identity message still is
+received at some later point, then it should be interpreted as if it was sent
+at the beginning of the communication, with service bits ignored.
+
+1. type: 21 (`identity`)
+2. data:
+   * [`8`:`services`]
+   * [`1`:`ualen`]
+   * [`ualen`:`user_agent`]
+
+The 8-byte services field mimics the usage of the Bitcoin servies flag, see
+below.  Service flags are purely informational and do not obey the "it's okay
+to be odd" rule.
+
+The `user_agent` field should be formatted like a Bitcoin user-agent, as in,
+and MAY include information like operating system in the comment fields, as in
+[BIP-0014](https://github.com/bitcoin/bips/blob/master/bip-0014.mediawiki).
+The `user_agent` MAY be able to be changed by a CLI argument, for when the node
+software is being launched or managed by some wrapper, like a desktop wallet.
+
+Examples:
+
+* `/lnd:0.5.1-beta/Zap-Desktop:0.2.2/`
+* `/c-lightning:0.6.2(amd64 Debian)/`
+* `/Eclair:0.2-beta8/`
+
+Service flags defined below.
+
+#### Requirements
+
+The sending node:
+  - if the `identity_message` is set on both sides after the `init` message:
+    - MUST send `identity` as the second message, the first after `init` before any other message
+    - MUST set undefined service bits to 0
+    - SHOULD set a `user_agent` according to their software information
+    - SHOULD NOT set a `user_agent` that does not match the format.
+
+The receiving node:
+  - if the `identity_message` is set on both sides after the `init` message:
+    - MUST wait until an `identity` message is received before sending any other message
+  - upon receiving any message before `identity` with flag set:
+    - SHOULD send an `error` message and close the connection
+  - upon receiving `identity` with flag set:
+    - if an `identity` message has already been recieved
+      - SHOULD send an `error` message and close the connection
+    - if `user_agent` is printable ASCII
+      - SHOULD log the user agent, otherwise convert it to printable ASCII and log
+      - Record `user_agent` for future use in dumps/etc.
+    - if `user_agent` does not match the formatting
+      - MAY log a warning
+      - SHOULD NOT close the connection
+    - store the service flags and reference them when interacting with the peer
+    - if service bits are set that this peer does not understand
+      - MAY log a warning message
+  - upon receiving `identity` without flag set on both sides:
+    - MAY interpret the message as if the flag was set, or MAY ignore message
+    - SHOULD log a warning, with whatever action taken
+
+#### Rationale
+
+With more implementations and growing complexity to the BOLT standard, there
+will inevitably be some bugs that arise between two implementations.  The
+`user_agent` field makes it simpler to diagnose these issues when issues are
+discovered in the wild, and should be included in bug reports and logs.
+
+Service flags allow for a more modularized communication of what sets of
+actions a node can support since not all nodes are created equal.  Having a
+graceful way to signal what kinds of operations a node supports is better than
+not being able to communicate that and then erroring out when those actions
+are attempted.
+
+#### Service Bits
+
+| Bit | Service name | Description |
+|-----|--------------|-------------|
+| 0   | `NODE_ROUTING_GOSSIP_RELAY` | Relays routing gossip messages and MAY keep a limited portion of the network graph, see BOLT-07. |
+| 1   | `NODE_ROUTING_GOSSIP_QUERIES` | A synonym for `localfeatures` flag `gossip_queries`, see BOLT-07. |
+| 2   | `NODE_LIGHTNING_CHANNELS` | Can construct basic Lightning channels with HTLCs, see BOLT-02. |
+| 3   | `NODE_LIGHTNING_MULTIHOP` | Acts as a hop in a multihop (onion routed) Lightning payment, see BOLT-02 et al. |
+
+For example if a node signals the following in an `identify` message:
+
+```
+0000000000000000000000000000000000000000000000000000000000000011
+(or 00000000_00000003 = NODE_ROUTING_GOSSIP_RELAY + NODE_ROUTING_GOSSIP_QUERIES)
+```
+
+Then its peers should know not to attempt to form channels with them, but
+should relay routing information to them and would be able to request
+fine-grained info using the `gossip_queries` messages.
+
+Other services will be added as-needed, such as for messages to set up
+Burchert-Decker-Wattenhofer-style channel factories or for splicing operations.
+We also may want to move the definitions of these service bits to another BOLT
+standard number.
 
 ## Control Messages
 
